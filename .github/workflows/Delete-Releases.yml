@@ -1,0 +1,50 @@
+name: Delete Releases
+
+on:
+  schedule:
+    - cron: '0 3 * * 1' # 每周一凌晨3点执行
+  workflow_dispatch:
+    inputs:
+      days:
+        description: '删除过期内容（默认30天前）'
+        required: false
+        default: '30'
+
+jobs:
+  delete-old-releases-tags:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Delete old releases and tags
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 如果有输入参数则用输入参数，否则默认30
+          DAYS="${{ github.event.inputs.days || '30' }}"
+          REPO="${{ github.repository }}"
+          echo "删除 $DAYS 天前的tag和release"
+          releases=$(gh release list --limit 1000 --repo "$REPO" --json tagName,createdAt | jq -c '.[]')
+          now=$(date +%s)
+          for release in $releases; do
+            tag=$(echo $release | jq -r '.tagName')
+            created=$(echo $release | jq -r '.createdAt')
+            # 检查tag格式：分支-型号-日期（或 型号-日期），允许字母、数字、下划线、连字符和点
+            if [[ $tag =~ ^[A-Za-z0-9_.-]+-[0-9]{6}$ ]]; then
+              # 解析日期
+              date_str=${tag##*-}
+              year=20${date_str:0:2}
+              month=${date_str:2:2}
+              day=${date_str:4:2}
+              tag_date=$(date -d "$year-$month-$day" +%s 2>/dev/null)
+              if [[ -n $tag_date ]]; then
+                diff_days=$(( (now - tag_date) / 86400 ))
+                if (( diff_days > DAYS )); then
+                  echo "Deleting release and tag: $tag ($diff_days days old)"
+                  gh release delete "$tag" --repo "$REPO" -y || true
+                  gh tag delete "$tag" --repo "$REPO" || true
+                fi
+              fi
+            fi
+          done
